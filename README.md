@@ -7,8 +7,7 @@
 三个与现有方案的区别：
 
 - **首个纯插件打通「贴图准入」的闭环**：社区现有方案（[#357](https://github.com/deepseek-ai/deepseek-harness/discussions/357)、[#427](https://github.com/deepseek-ai/deepseek-harness/discussions/427)、[#733](https://github.com/deepseek-ai/deepseek-harness/discussions/733)、[#911](https://github.com/deepseek-ai/deepseek-harness/discussions/911) 等）要么是提案、要么是改核心的 patch/fork；
-- **子代理原生看图**：图片直接交给多模态子代理理解，不做「先压缩成文本描述再转述」的语义损耗，支持多轮追问；图片走 harness 自己的附件库（会话引用授权、随会话导出），路由本地时不出本机，**零新增凭据**；
-- **与工具路线互补**：见下文「与 agent-vision-toolkit 的关系」。
+- **子代理原生看图**：图片直接交给多模态子代理理解，不做「先压缩成文本描述再转述」的语义损耗，支持多轮追问；图片走 harness 自己的附件库（会话引用授权、随会话导出），路由本地时不出本机，**零新增凭据**。
 
 ## 安装
 
@@ -97,21 +96,11 @@ curl -s -X POST http://127.0.0.1:3080/image-subagent/status \
 2. **LLM 边界投影**：同一条 `internal/get` 桥接把 `llm.prepareCall` / `llm.stream` 包装成惰性生成器——agent 主循环的 request 是 `deepFreeze` 的、无法原地改写，因此首次拉取流时解析真实模态、**克隆 options** 并把 `image` 块（含 tool-result 内嵌）投影为显式占位文本（携带附件 id、文件名、尺寸），再交给真实调用。纯文本适配器（DeepSeek）因此不再抛 `UNSUPPORTED_CONTENT`，整轮运行正常完成。**图片不会被静默丢弃**——占位符把「不可见」显式写进对话，主模型可据此委托视觉子代理。
 3. **保险丝**：`llm/stream` 瀑布对绕开 `ctx.llm` 属性路径、且 options 可变的直接调用做机会式原地投影。
 
-## 与 agent-vision-toolkit 的关系（互补，非竞争）
-
-- [dsh-vision-toolkit](https://github.com/Anionex/agent-vision-toolkit) 走**工具路线**：10 个视觉工具（OCR、grounding、像素对比、UI 还原等）对工作区文件调外部视觉 API，解决「看图之后能做什么」；它**不处理聊天贴图的准入门控**。
-- 本插件走**子代理路线**：解决「贴图进得去」这一环——准入放行、附件入库、占位符投影、同会话子代理原生读图。
-- **两者可叠加**：贴图后主模型既可以直接委托子代理看图，也可以调用它的 OCR/ground 等工具做精细视觉任务；它的 README 也主张「agent 的视觉能力可以住在 harness 里」，本插件是这一主张在「贴图链路」上的零补丁实现。
-
 ## 兼容性
 
 - 要求 `@deepseek-ai/dsh` ≥ 0.1.0-rc.6（依赖 `internal/get`、`llm/stream` 两个 seam 与附件服务）。
 - 与核心的「图片→占位符」补丁方案完全兼容：若你已打过核心补丁，插件投影在前、核心投影在后，二者幂等共存。
 - 已在**未打任何核心补丁的 rc.6** 上端到端验证：贴图准入放行（`accepted: true`）、图片入库为持久化附件、主模型收到占位符、本轮正常完成（不再 `UNSUPPORTED_CONTENT`）。
-
-## 兜底补丁（一般不需要）
-
-`patches/` 目录附带了核心级等价方案（`dsh-llm` 的 `prepareCall` 透传、`dsh-host-apiproxy` 准入放行），仅当未来版本 seam 变化导致插件失效时作为临时替代。应用方式见 `patches/README.md`。
 
 ## License
 
