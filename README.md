@@ -34,6 +34,15 @@ dsh plugin --profile web add github:yuqingsh/dsh-image-subagent
 
 没有视觉子代理时，占位符会进入对话，但无人能读图——主模型会告知你这一情况。
 
+### 子代理读图的硬性要求（缺一不可）
+
+1. **子代理模型必须声明 image 输入**（`inputModalities` 含 `image`）。若子代理也是纯文本路由，本插件的投影会把图片同样变成占位符，子代理只能拿到元数据、看不到像素。
+2. **工具集包含 `read_attachment` / `read_image`**（由核心 `dsh-tool-fs` 提供，多数完整预设默认已挂载）。
+3. **子代理必须在本会话内派生**（spawn / fork）：附件读取按会话日志的引用授权，独立新会话无权读取该 id。
+4. 主模型委托时把占位符里的 `attachmentId` 一并传给子代理。
+
+满足以上条件的组合（如 DeepSeek V4 主模型 + MiniMax M3 observer）已端到端实测通过：贴图 → 准入放行 → 附件入库 → 主模型收到占位符 → observer 经 `read_attachment` 读取并完整描述图片。
+
 ## 工作原理（两个插件级 seam）
 
 1. **准入放行**：`dsh-host-apiproxy` 的图片准入通过 `ctx.llm.resolveModelInfo(...)` 检查路由的 `inputModalities`。本插件在 cordis 的 `internal/get` 瀑布上包装 `llm` 服务，对未声明 `image` 输入的路由补报 image 能力，于是：
