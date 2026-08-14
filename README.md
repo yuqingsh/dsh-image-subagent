@@ -18,7 +18,7 @@ observer（多模态模型）：read_attachment → 返回图片内容描述
 
 ```sh
 # 需要 pnpm（brew install pnpm）
-dsh plugin --profile web add github:<你的用户名>/dsh-image-subagent
+dsh plugin --profile web add github:yuqingsh/dsh-image-subagent
 ```
 
 发布到 npm 后：`dsh plugin --profile web add dsh-image-subagent`
