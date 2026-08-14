@@ -1,0 +1,6 @@
+# dsh-image-subagent bundle patch：挂载图片桥接插件。
+# inject 让 loader 在 web 连接服务与 llm 服务激活后再应用本插件。
+- insert:
+    - id: image-subagent
+      name: 'dsh-image-subagent'
+      inject: [connection, llm]
