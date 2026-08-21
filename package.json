@@ -1,7 +1,7 @@
 {
   "name": "dsh-image-subagent",
-  "version": "0.1.1",
-  "description": "让纯文本主模型（DeepSeek V4 等）也能接收图片附件：图片投影为显式占位文本，由主模型委托视觉子代理经 read_attachment/read_image 读取。",
+  "version": "0.2.0",
+  "description": "让纯文本主模型（DeepSeek V4 等）也能接收图片附件：抹除纯文本路由的模态声明放行 0.1.1 准入门禁，图片投影为携带完整 attachmentId 的占位文本，由主模型委托视觉子代理经 read_image 读取。",
   "keywords": [
     "deepseek",
     "deepseek-harness",
@@ -33,7 +33,7 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.1.0-rc.6"
+    "@deepseek-ai/dsh": ">=0.1.1-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": { "optional": true }

@@ -1,30 +1,52 @@
 const name = "image-subagent";
 const inject = ["connection", "llm"];
+
 /**
- * dsh-image-subagent — 让纯文本主模型（如 deepseek-v4-pro）也能接收图片附件：
- * 图片不是发给主模型，而是进入会话后投影为显式占位文本，由主模型委托给
- * 具备视觉能力的子代理（多模态模型）通过 read_attachment / read_image 读取。
+ * dsh-image-subagent v0.2.0 — 适配 dsh ≥ 0.1.1-rc.2 的图片桥接插件：
+ * 让纯文本主模型（如 deepseek-v4-pro）也能接收图片附件：图片进入会话后投影为
+ * 显式占位文本（携带完整 attachmentId），由主模型委托视觉子代理读取。
+ *
+ * 0.1.1 相对 rc.6 的变化（决定本版适配策略）：
+ * - 准入门禁（dsh-host-apiproxy）只拒绝「显式声明 inputModalities 且不含 image」
+ *   的路由；声明省略（undefined）视为负能力，直接放行。
+ * - 官方适配器对纯文本路由有原生占位投影
+ *   `[image omitted because this model accepts text only; attachment sha256:前8位]`，
+ *   但只含 8 位摘要；本插件在主循环路径上投影为携带完整 attachmentId 的富占位。
+ *
+ * 因此 0.2.0 把旧版的「给纯文本路由补报 image 能力」改为「抹除纯文本路由的
+ * inputModalities 声明」，三个效果：
+ * - 门禁：undefined → 放行，贴图不再被拒绝；
+ * - 适配器：仍按纯文本路由处理 → 插件富占位投影优先，漏网路径由官方原生占位
+ *   兜底，不存在把图片当真发给纯文本端点的失败模式；
+ * - read_image 工具门禁：主模型路由 undefined → 仍拒绝（委托流保持不变）；
+ *   视觉路由（如 deepseek-v4-flash-vision-exp）完全不受影响，原生直读。
  *
  * 两个机制（均为插件级 seam，不修改核心）：
  * 1. `internal/get` 瀑布：包装 `ctx.llm` 服务 ——
- *    a) resolveModelInfo 对未声明 image 输入的路由补报 image 能力，放行
+ *    a) resolveModelInfo 对纯文本路由抹除 inputModalities，放行
  *       apiproxy 的图片准入门控（MODEL_DOES_NOT_SUPPORT_IMAGES）；
  *    b) prepareCall/stream 包装为惰性生成器：agent 主循环的 request 是
  *       deepFreeze 的，无法原地改写，因此首次拉取时解析真实模态、克隆
- *       options 并把 image 块投影为显式占位文本（携带 attachmentId），
- *       再交给真实调用 —— 纯文本适配器不再抛 UNSUPPORTED_CONTENT。
+ *       options 并把 image 块投影为显式占位文本，再交给真实调用。
  * 2. `llm/stream` 瀑布：对绕开 `ctx.llm` 属性路径、且 options 可变的直接调用，
  *    做机会式的原地投影（保险丝；主流路径由机制 1 覆盖）。
  */
 function apply(ctx) {
-  // ── 占位符与投影（与官方核心补丁方案保持同一文案）──────────────────────
+  // ── 占位符与投影 ───────────────────────────────────────────────────────
+  // 0.1.1 的附件对象存于 ~/.dsh/attachments/v1/objects/<id前2位hex>/<64位hex>，
+  // 占位符携带完整 id 后，主模型可直接推导文件路径交给视觉子代理 read_image。
   function imagePlaceholderText(attachment) {
     const name = typeof attachment?.name === "string" && attachment.name.length > 0 ? ` "${attachment.name}"` : "";
     const mediaType = typeof attachment?.mediaType === "string" && attachment.mediaType.length > 0 ? attachment.mediaType : "image";
     const dimensions = Number.isInteger(attachment?.width) && Number.isInteger(attachment?.height) ? `, ${attachment.width}x${attachment.height} px` : "";
     const bytes = Number.isSafeInteger(attachment?.bytes) ? `, ${attachment.bytes} bytes` : "";
-    const id = typeof attachment?.attachmentId === "string" && attachment.attachmentId.length > 0 ? `, id=${attachment.attachmentId}` : "";
-    return `[image attachment${name} (${mediaType}${dimensions}${bytes}${id}) — not visible to this text-only model route; a vision-capable subagent can inspect it with the read_attachment tool]`;
+    const id = typeof attachment?.attachmentId === "string" && attachment.attachmentId.length > 0 ? attachment.attachmentId : "";
+    const idTag = id.length > 0 ? `, id=${id}` : "";
+    const ext = mediaType === "image/jpeg" ? ".jpg" : mediaType === "image/webp" ? ".webp" : ".png";
+    const hint = id.startsWith("sha256:")
+      ? ` To inspect it, use the subagent_observer tool if it exists in your toolset (NOT a generic subagent — it inherits this text-only route and cannot read images): the stored object at ~/.dsh/attachments/v1/objects/${id.slice(7, 9)}/${id.slice(7)} has no extension — have the subagent copy it to a writable path with extension ${ext}, then read that copy with read_image. If no vision-capable subagent tool exists, do not spawn a generic subagent; instead ask the user to switch the session model to an image-capable one (e.g. deepseek-v4-flash-vision-exp).`
+      : "";
+    return `[image attachment${name} (${mediaType}${dimensions}${bytes}${idTag}) — not visible to this text-only model route.${hint}]`;
   }
   function projectContent(content) {
     let changed = false;
@@ -81,7 +103,10 @@ function apply(ctx) {
 
   // ── 机制 1：internal/get 包装 llm 服务 ────────────────────────────────────
   // 三个能力：
-  // 1) resolveModelInfo 补报 image 输入 → 放行 apiproxy 的图片准入门控；
+  // 1) resolveModelInfo 对纯文本路由抹除 inputModalities → 放行 apiproxy 的
+  //    图片准入门控（0.1.1 门禁只拒绝「显式声明且不含 image」）；
+  //    抹除而非补报：适配器仍按纯文本路由走原生占位兜底，不会把图片当真
+  //    发给纯文本端点，read_image 工具门禁也对主模型保持拒绝。
   // 2) prepareCall/stream 包装为惰性生成器：首次拉取时解析真实模态并克隆
   //    options（agent 主循环的 request 是 deepFreeze 的，无法原地改写），
   //    把 image 块投影为占位文本后再交给真实调用；
@@ -128,8 +153,11 @@ function apply(ctx) {
         if (p === "resolveModelInfo") {
           return async function resolveModelInfoBridged(provider, model, signal) {
             const info = await target.resolveModelInfo(provider, model, signal);
+            // 0.2.0：纯文本路由抹除声明（undefined = 负能力 → 门禁放行），
+            // 视觉路由与未声明路由原样返回。
             if (info !== void 0 && Array.isArray(info.inputModalities) && !info.inputModalities.includes("image")) {
-              return { ...info, inputModalities: [...info.inputModalities, "image"] };
+              const { inputModalities: _omitted, ...rest } = info;
+              return rest;
             }
             return info;
           };
@@ -166,12 +194,13 @@ function apply(ctx) {
         let real = null;
         try {
           // 属性访问走 internal/get 瀑布 → 桥接后的视图（准入层看到的）。
-          bridged = (await ctx.llm.resolveModelInfo("deepseek-official", "deepseek-v4-pro")).inputModalities;
+          const mods = (await ctx.llm.resolveModelInfo("deepseek-official", "deepseek-v4-pro")).inputModalities;
+          bridged = mods === void 0 ? "(omitted — paste gate passes)" : mods;
         } catch (error) {
           bridged = "error: " + String(error.message || error);
         }
         try {
-          // ctx.get 走隔离存储直读，绕开包装，得到真实声明。
+          // 非 runtime 上下文直读，绕开包装，得到真实声明。
           const raw = ctx.get("llm");
           real = raw === void 0 ? null : (await raw.resolveModelInfo("deepseek-official", "deepseek-v4-pro")).inputModalities;
         } catch (error) {
